@@ -31,7 +31,7 @@ from src.vectorstore import PaperVectorStore
 from src.generator import stream_answer
 
 app = typer.Typer(
-    help="Intelligent Section-Aware RAG for Research Papers using OpenRouter",
+    help="Intelligent Section-Aware RAG for Research Papers (NVIDIA NIM generation, OpenRouter embeddings)",
     rich_markup_mode="rich",
 )
 console = Console()
@@ -158,18 +158,18 @@ def query_cmd(
         None, "--k", "-k", help="Number of context chunks to retrieve"
     ),
     model: Optional[str] = typer.Option(
-        None, "--model", "-m", help="OpenRouter generation model (e.g. 'openai/gpt-4o-mini')"
+        None, "--model", "-m", help="NVIDIA generation model (e.g. 'meta/llama-3.3-70b-instruct')"
     ),
     show_sources: bool = typer.Option(
         True, "--show-sources/--no-show-sources", help="Display retrieved chunk citations"
     ),
 ):
     """
-    Query the indexed research paper(s). Retrieves relevant chunks and streams the answer via OpenRouter.
+    Query the indexed research paper(s). Retrieves relevant chunks and streams the answer via NVIDIA.
     """
     settings = get_settings()
     k_val = k or settings.top_k_retrieval
-    llm_model = model or settings.openrouter_model
+    llm_model = (model or settings.nvidia_model).strip()
 
     store = PaperVectorStore(
         chroma_path=settings.chroma_path,
@@ -225,21 +225,24 @@ def query_cmd(
         console.print(table)
         console.print()
 
-    # Step 3: Stream Answer from OpenRouter
+    # Step 3: Stream Answer from NVIDIA
     console.print(f"[bold cyan]Answer (model: {llm_model}):[/bold cyan]\n")
     try:
         stream_answer(
             query=q,
             hits=hits,
-            api_key=settings.openrouter_api_key or "",
+            api_key=settings.nvidia_api_key or "",
             model=llm_model,
+            base_url=settings.nvidia_base_url,
             token_callback=lambda token: console.print(token, end=""),
         )
         console.print("\n")
     except Exception as e:
         console.print(f"\n[bold red]Generation Error:[/bold red] {e}")
-        if not settings.openrouter_api_key:
-            console.print("[yellow]Tip: Add OPENROUTER_API_KEY=your_key_here to .env[/yellow]")
+        if not settings.nvidia_api_key:
+            console.print("[yellow]Tip: Add NVIDIA_API_KEY=your_key_here to .env[/yellow]")
+        elif not settings.nvidia_model:
+            console.print("[yellow]Tip: Add NVIDIA_MODEL=your_model_here to .env[/yellow]")
         raise typer.Exit(1)
 
 
@@ -311,19 +314,25 @@ def show_config_cmd():
     Display current active configuration loaded from .env.
     """
     settings = get_settings()
-    has_key = bool(settings.openrouter_api_key)
-    masked_key = (
-        f"{settings.openrouter_api_key[:8]}...{settings.openrouter_api_key[-4:]}"
-        if has_key and len(settings.openrouter_api_key or "") > 12
-        else ("[red]NOT SET[/red]" if not has_key else "[green]SET[/green]")
-    )
+
+    def _mask(value: Optional[str]) -> str:
+        if not value:
+            return "[red]NOT SET[/red]"
+        if len(value) > 12:
+            return f"{value[:8]}...{value[-4:]}"
+        return "[green]SET[/green]"
+
+    masked_openrouter_key = _mask(settings.openrouter_api_key)
+    masked_nvidia_key = _mask(settings.nvidia_api_key)
 
     table = Table(title="Smart Chunking RAG Configuration", border_style="blue")
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="yellow")
 
-    table.add_row("OPENROUTER_API_KEY", masked_key)
-    table.add_row("OPENROUTER_MODEL", settings.openrouter_model)
+    table.add_row("NVIDIA_API_KEY", masked_nvidia_key)
+    table.add_row("NVIDIA_MODEL", settings.nvidia_model or "[red]NOT SET[/red]")
+    table.add_row("NVIDIA_BASE_URL", settings.nvidia_base_url)
+    table.add_row("OPENROUTER_API_KEY", masked_openrouter_key)
     table.add_row("EMBED_MODEL", settings.embed_model)
     table.add_row("EMBED_PROVIDER", settings.embed_provider)
     table.add_row("CHROMA_PATH", settings.chroma_path)

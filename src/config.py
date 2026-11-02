@@ -21,10 +21,15 @@ else:
     load_dotenv()
 
 
+DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+
+
 @dataclass
 class Settings:
     openrouter_api_key: Optional[str]
-    openrouter_model: str
+    nvidia_api_key: Optional[str]
+    nvidia_model: str
+    nvidia_base_url: str
     embed_model: str
     embed_provider: str
     chroma_path: str
@@ -36,7 +41,9 @@ class Settings:
     @classmethod
     def load(cls) -> "Settings":
         api_key = os.getenv("OPENROUTER_API_KEY", "").strip() or None
-        openrouter_model = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini").strip()
+        nvidia_api_key = os.getenv("NVIDIA_API_KEY", "").strip() or None
+        nvidia_model = os.getenv("NVIDIA_MODEL", "").strip()
+        nvidia_base_url = os.getenv("NVIDIA_BASE_URL", DEFAULT_NVIDIA_BASE_URL).strip().rstrip("/")
         embed_model = os.getenv("EMBED_MODEL", "openai/text-embedding-3-small").strip()
         embed_provider = os.getenv("EMBED_PROVIDER", "openrouter").strip().lower()
         chroma_path = os.getenv("CHROMA_PATH", "./chroma_db").strip()
@@ -59,7 +66,9 @@ class Settings:
 
         return cls(
             openrouter_api_key=api_key,
-            openrouter_model=openrouter_model,
+            nvidia_api_key=nvidia_api_key,
+            nvidia_model=nvidia_model,
+            nvidia_base_url=nvidia_base_url,
             embed_model=embed_model,
             embed_provider=embed_provider,
             chroma_path=chroma_path,

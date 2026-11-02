@@ -1,6 +1,6 @@
 # Smart Chunking RAG for Research Papers
 
-A CLI Retrieval-Augmented Generation (RAG) system specifically designed for research papers. It combines block-level layout analysis with semantic sentence clustering and connects to OpenRouter for both embeddings and answer generation.
+A CLI Retrieval-Augmented Generation (RAG) system specifically designed for research papers. It combines block-level layout analysis with semantic sentence clustering, uses **NVIDIA NIM** for answer generation, and OpenRouter for embeddings.
 
 ---
 
@@ -15,7 +15,7 @@ A CLI Retrieval-Augmented Generation (RAG) system specifically designed for rese
 - **Upgraded OpenRouter Embedding Model**: Powered by `openai/text-embedding-3-small` through OpenRouter's native `/embeddings` API, with optional offline local fallback (`sentence-transformers`).
 - **Seamless `.env` Integration**: Automatically loads configuration and API keys from `.env` on every run—no need to run `export` in your shell every time.
 - **Local ChromaDB Vector Database**: Zero-config persistent vector store in `./chroma_db`.
-- **Streaming Generation**: Streams answers token-by-token using OpenRouter chat completions (`openai/gpt-4o-mini` by default).
+- **Streaming Generation**: Streams answers token-by-token from the NVIDIA OpenAI-compatible chat completions endpoint (`https://integrate.api.nvidia.com/v1`), using the model you set in `NVIDIA_MODEL`.
 
 ---
 
@@ -56,10 +56,15 @@ pip install -r requirements.txt
 ### 3.2. Configuration (`.env`)
 The program reads all configuration directly from `.env`. **You do not need to run `export` before each command.**
 
-Simply edit `.env` and set your OpenRouter API key:
+Simply edit `.env` and set your NVIDIA API key (for answering) and OpenRouter API key (for embeddings):
 ```env
+# Answer generation -> NVIDIA
+NVIDIA_API_KEY=nvapi-your-key-here
+NVIDIA_MODEL=meta/llama-3.3-70b-instruct
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
+
+# Embeddings -> OpenRouter
 OPENROUTER_API_KEY=sk-or-v1-your-key-here
-OPENROUTER_MODEL=openai/gpt-4o-mini
 EMBED_MODEL=openai/text-embedding-3-small
 EMBED_PROVIDER=openrouter
 CHROMA_PATH=./chroma_db
@@ -68,6 +73,8 @@ MAX_CHUNK_TOKENS=512
 SEMANTIC_SIMILARITY_THRESHOLD=0.65
 TOP_K_RETRIEVAL=5
 ```
+
+> **Note**: The answering model is configured entirely through `NVIDIA_API_KEY` / `NVIDIA_MODEL` — edit those two values in `.env` and every command picks them up, no code changes needed.
 
 > **Note**: If you want to run purely offline without an OpenRouter key for embeddings, set `EMBED_PROVIDER=local` and `EMBED_MODEL=all-MiniLM-L6-v2` in `.env`.
 
@@ -97,15 +104,15 @@ python paper_rag.py ingest paper.pdf --provider local --model all-MiniLM-L6-v2
 ```
 
 ### 4.3. Query Ingested Papers
-Retrieves the most relevant chunks and streams an answer:
+Retrieves the most relevant chunks and streams an answer from the NVIDIA API:
 ```bash
 python paper_rag.py query "What is the main contribution of this paper?"
 ```
 
 Optional CLI flags:
 ```bash
-# Retrieve top-7 chunks and use Claude 3.5 Sonnet
-python paper_rag.py query "What datasets were used?" -k 7 --model anthropic/claude-3.5-sonnet
+# Retrieve top-7 chunks and override the NVIDIA model for this run
+python paper_rag.py query "What datasets were used?" -k 7 --model meta/llama-3.1-8b-instruct
 
 # Hide retrieved citation preview table
 python paper_rag.py query "What are the limitations?" --no-show-sources
