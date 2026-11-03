@@ -104,12 +104,22 @@ def ingest_cmd(
             console.print(f"[bold red]Embedding backend initialization failed:[/bold red]\n{e}")
             raise typer.Exit(1)
 
-    # Step 3: Intelligent Layout-Aware & Semantic Chunking
-    with console.status("[bold blue]Executing intelligent chunking decision tree...[/bold blue]"):
+    # Step 3: Adaptive layout-aware & semantic chunking
+    # The chunk budget is clamped to the embedding model's real context window
+    # (e.g. 256 tokens for all-MiniLM-L6-v2) so no chunk is silently truncated.
+    model_limit = int(getattr(embed_backend, "max_input_tokens", 8192) or 8192)
+    effective_max = max(64, min(max_tok, model_limit - 64))
+    if effective_max != max_tok:
+        console.print(
+            f"[dim]Embedding model context is {model_limit} tokens - "
+            f"chunk budget clamped to {effective_max}.[/dim]"
+        )
+
+    with console.status("[bold blue]Executing adaptive chunking engine...[/bold blue]"):
         chunks = chunk_paper(
             blocks=blocks,
             embed_backend=embed_backend,
-            max_tokens=max_tok,
+            max_tokens=effective_max,
             threshold=sim_thresh,
         )
 
@@ -125,7 +135,10 @@ def ingest_cmd(
     console.print(f"Chunking breakdown: [dim]{strat_summary}[/dim]")
 
     # Step 4: Generate Embeddings
-    chunk_texts = [ch["text"] for ch in chunks]
+    # Chunks are embedded *with* their heading breadcrumb so that a passage
+    # like "It reached 94% accuracy" is retrievable by its topic, not just by
+    # its bare content.
+    chunk_texts = [ch.get("embedding_text") or ch["text"] for ch in chunks]
     with console.status(f"[bold blue]Computing embeddings via {embed_backend.model_name}...[/bold blue]"):
         try:
             embeddings = embed_backend.embed_documents(chunk_texts)

@@ -27,7 +27,7 @@ def build_rag_prompt(query: str, hits: List[Dict[str, Any]]) -> str:
     formatted_chunks = []
     for hit in hits:
         meta = hit.get("meta", {})
-        heading = meta.get("heading", "Section")
+        heading = meta.get("section_path") or meta.get("heading", "Section")
         page = meta.get("page", "?")
         source = meta.get("paper_title", "Paper")
         text = hit.get("text", "").strip()

@@ -7,11 +7,14 @@ A CLI Retrieval-Augmented Generation (RAG) system specifically designed for rese
 ## 1. Key Features
 
 - **Layout-Aware PDF Extraction (PyMuPDF)**: Extracts block-level text along with structural signals (font sizes, boldness, line boxes, page numbers).
-- **Intelligent Chunking Decision Tree**: Automatically inspects the PDF layout to pick the optimal chunking strategy:
+- **Adaptive Chunking Engine**: Inspects the PDF layout and picks the strategy per section, so nothing is ever chunked the "wrong" way:
   1. **Section-Aware Chunking**: Preserves structural units (Abstract, Introduction, Methods, Results, Discussion, etc.) intact if within token budget.
-  2. **Semantic Sub-Splitting**: For long sections exceeding `MAX_CHUNK_TOKENS`, computes consecutive sentence embeddings and splits at semantic boundaries where cosine similarity drops.
-  3. **Continuous Prose Strategy**: If no headings exist, applies pure semantic chunking across the entire paper.
-  4. **Recursive Fallback**: Gracefully falls back to token/character recursive splitting if embeddings are unavailable.
+  2. **Reference-Aware Chunking**: A bibliography becomes one chunk per citation entry instead of prose.
+  3. **Table-Aware Chunking**: A table is split by rows, and every chunk repeats the caption and the header row so it stands alone.
+  4. **Semantic Sub-Splitting**: For long sections exceeding `MAX_CHUNK_TOKENS`, computes consecutive sentence embeddings and splits at semantic boundaries where cosine similarity drops - with a minimum chunk size and one sentence of overlap.
+  5. **Continuous Prose Strategy**: If no headings exist, applies pure semantic chunking across the entire paper.
+  6. **Deterministic Fallback**: Gracefully falls back to paragraph/sentence packing if embeddings are unavailable.
+- **Output Invariants**: every chunk is non-empty, within the token budget, not a duplicate, not pathologically small, and carries its heading breadcrumb and page for retrieval.
 - **Upgraded OpenRouter Embedding Model**: Powered by `openai/text-embedding-3-small` through OpenRouter's native `/embeddings` API, with optional offline local fallback (`sentence-transformers`).
 - **Seamless `.env` Integration**: Automatically loads configuration and API keys from `.env` on every run—no need to run `export` in your shell every time.
 - **Local ChromaDB Vector Database**: Zero-config persistent vector store in `./chroma_db`.
@@ -134,48 +137,88 @@ python paper_rag.py clear --force
 
 ---
 
-## 5. Intelligent Chunking Decision Tree
+## 5. Adaptive Chunking Engine
+
+The engine does not apply one fixed recipe to every document. It first
+*profiles* the document and then picks the strategy that fits each section.
+Every stage has a deterministic fallback, so `ingest` never fails because of
+chunking.
+
+### 5.1 Pipeline
 
 ```
-                           [ PDF Document ]
-                                  │
-                       PyMuPDF Block Extraction
-                     (font size, weight, page, bbox)
-                                  │
-                                  ▼
-                     [ Detect Layout Headings ]
-                         (font > avg + bold)
-                                  │
-                 ┌────────────────┴────────────────┐
-                 ▼                                 ▼
-      [ Clear Headings Found ]            [ No Headings Found ]
-                 │                        (Continuous Prose)
-                 ▼                                 │
-     Split by Section Headings                     │
-                 │                                 │
-       ┌─────────┴─────────┐                       │
-       ▼                   ▼                       │
-Section <= MAX_TOKENS   Section > MAX_TOKENS       │
-       │                   │                       │
- Keep Section Whole        ▼                       ▼
- (Structural Chunk)  Sentence Splitting      Sentence Splitting
-                     (protecting et al.,     (protecting et al.,
-                      decimals, Fig., i.e.)   decimals, Fig., i.e.)
-                           │                       │
-                           ▼                       ▼
-                 [ Semantic Chunking ]   [ Pure Semantic Chunking ]
-                 (Cosine similarity      (Cosine similarity
-                  drops trigger break)    drops trigger break)
-                           │                       │
-                           └───────────┬───────────┘
-                                       ▼
-                       (If embedding API unavailable)
-                                       │
-                                       ▼
-                        [ Recursive Fallback Split ]
+                    [ PDF Document ]
+                           │
+              PyMuPDF block extraction
+              (font size, weight, page, bbox)
+                           │
+                           ▼
+        [ Clean blocks: drop running headers/footers,
+          page numbers, arXiv stamps, normalise space ]
+                           │
+                           ▼
+        [ Detect headings: numbering + academic
+          vocabulary + font statistics + title shape ]
+          (captions and list items are rejected)
+                           │
+                           ▼
+        [ Rebuild the heading hierarchy
+          -> breadcrumb path per section ]
+                           │
+                           ▼
+    ┌──────────── per-section strategy selection ────────────┐
+    │                                                        │
+    │  fits in budget?      -> section_whole                 │
+    │  References section?  -> section_references            │
+    │                        (one chunk per citation entry)  │
+    │  contains a table?    -> section_table                 │
+    │                        (caption + header row repeated) │
+    │  embeddings available -> section_semantic_subsplit     │
+    │  no embeddings        -> section_recursive_subsplit    │
+    │  no headings at all   -> pure_semantic                  │
+    └────────────────────────────────────────────────────────┘
+                           │
+                           ▼
+        [ Finalise: enforce the output invariants ]
+        1. never empty
+        2. never above the token budget (hard guarantee)
+        3. never a pathologically tiny chunk (merged into a neighbour)
+        4. never a duplicate
+        5. every chunk carries heading breadcrumb + page
 ```
 
----
+### 5.2 Output guarantees
+
+| Guarantee | How it is enforced |
+| :--- | :--- |
+| Chunk never exceeds `MAX_CHUNK_TOKENS` | conservative token estimate (1.25 tokens/word + surcharge for long identifiers) + hard split in the finalise pass |
+| No empty chunks | dropped in the finalise pass |
+| No duplicate chunks | normalised-text de-duplication |
+| No 5-token chunks | chunks below 25% of the budget are merged into a neighbour |
+| Chunks never cross a heading | sections are the hard boundary of the pipeline |
+| Sentences are never cut in half | a scanner-based sentence splitter that protects abbreviations, decimals, acronyms, initials, URLs, citations, quotes and bracketed spans |
+| Tables stay readable | caption + header row are repeated in every table chunk |
+| Bibliographies stay usable | one chunk per reference entry, never per sentence |
+| Retrieval context | each chunk is embedded together with its breadcrumb (`Section: 3 Methods > 3.1 Data`, `Page: 7`) |
+| Embeddings never silently truncated | the chunk budget is clamped to the embedding model's real context window (`max_input_tokens`) |
+| Works without an embedding API | deterministic sentence/paragraph packing fallback |
+
+### 5.3 What changed versus the previous decision tree
+
+* The old engine had one global rule ("section -> semantic split"). Long
+  tables were shredded into sentences and long bibliographies into meaningless
+  prose. Both are now first-class structures.
+* The old semantic splitter could emit single-sentence chunks and had no
+  overlap, so a chunk boundary always lost context. The new packer enforces a
+  minimum chunk size and repeats the last sentence of the previous chunk.
+* The old heading detector treated **any** bold line as a heading, which
+  over-segmented papers where bold is used for emphasis. Headings are now
+  scored on numbering, vocabulary, font size and title shape.
+* The old token estimate (`words * 1.3`) was applied inconsistently and the
+  recursive fallback produced chunks that were 30% over budget. Token
+  accounting is now conservative and used everywhere.
+* The old code never removed running headers/footers, so every chunk carried
+  the journal name and page number.
 
 ## 6. Running Tests
 
@@ -184,4 +227,4 @@ Run the full pytest suite:
 pytest -v
 ```
 
-All 15 tests covering PDF block extraction, heading heuristics, scientific sentence splitting, semantic clustering, recursive fallback, vector store operations, and CLI commands will run and verify the codebase.
+The suite covers PDF block extraction, heading heuristics, scientific sentence splitting, semantic clustering, the adaptive engine invariants (budget, no-empty, no-duplicate, no-tiny), running-header removal, table and reference handling, the recursive fallback, vector store operations and the CLI commands.

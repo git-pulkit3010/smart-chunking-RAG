@@ -36,6 +36,17 @@ class EmbeddingBackend(ABC):
         return results[0]
 
     @property
+    def max_input_tokens(self) -> int:
+        """
+        Maximum number of tokens the embedding model can consume in one input.
+
+        The chunking engine uses this to keep every chunk inside the model's
+        real context window (e.g. 256 for all-MiniLM-L6-v2, 8192 for
+        text-embedding-3-small).  Overriders should return the true limit.
+        """
+        return 8192
+
+    @property
     @abstractmethod
     def model_name(self) -> str:
         """Name or ID of the embedding model."""
@@ -115,6 +126,15 @@ class LocalSentenceTransformerEmbeddings(EmbeddingBackend):
     @property
     def model_name(self) -> str:
         return self._model_name
+
+    @property
+    def max_input_tokens(self) -> int:
+        """Real context window of the loaded model (256 for MiniLM, ...)."""
+        try:
+            limit = int(getattr(self._model, "max_seq_length", 256))
+        except Exception:
+            limit = 256
+        return max(32, limit)
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         if not texts:

@@ -50,11 +50,13 @@ class PaperVectorStore:
             documents.append(ch["text"])
             metadatas.append({
                 "heading": str(ch.get("heading", "Document Start")),
+                "section_path": str(ch.get("section_path", ch.get("heading", ""))),
                 "source": source_str,
                 "paper_title": Path(pdf_path).name,
                 "page": int(ch.get("page", 1)),
                 "chunk_index": i,
                 "strategy": str(ch.get("strategy", "unknown")),
+                "token_count": int(ch.get("token_count", 0)),
             })
 
         # Batch insert into ChromaDB
